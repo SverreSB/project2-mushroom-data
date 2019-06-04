@@ -1,0 +1,474 @@
+---
+title: "Building a Perfect Mushroom Classifier"
+author: "Will Carrara & Sverre Broen"
+date: "5/11/2019"
+output:
+  html_document:
+    theme: default
+---
+
+<style>
+body {
+text-align: justify}
+</style>
+
+<style type="text/css">
+@import "https://highlightjs.org/static/demo/styles/lightfair.css";
+</style>
+
+<script>
+   $(document).ready(function() {
+     $head = $('#header');
+     $head.prepend('<img src=\"https://www.morganpadgett.org/uploads/4/9/5/9/49596649/s905317008908675692_p270_i1_w2560.jpeg\" style=\"float: right;width: 150px;\"/>')
+   });
+</script>
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(prompt=TRUE, comment="", echo=TRUE)
+```
+***
+#### Abstract
+
+Derived from the Audobon Society Field Guide this data set includes physical descriptions of hypothetical samples corresponding to 23 species of gilled mushrooms in the Agaricus and Lepiota Family. Each species is identified as definitely edible, definitely poisonous, or of unknown edibility and not recommended. This latter class was combined with the poisonous one. The guide clearly states that there is no simple rule for determining the edibility of a mushroom; no rule like <i>"leaflets three, let it be"</i> as for Poisonous Oak and Ivy. The goal of this report is to determine the acceptable criteria for mushroom edibility using various machine learning models and if applicable, even a clever mnemonic.  
+
+Resources: [https://archive.ics.uci.edu/ml/datasets/mushroom](https://archive.ics.uci.edu/ml/datasets/mushroom)
+
+```{r results='hide', message=FALSE, warning=FALSE}
+# dependancies
+library(rpart)
+library(ggplot2)
+library(rpart.plot)
+
+# utility files 
+source("https://raw.githubusercontent.com/grbruns/cst383/master/lin-regr-util.R")
+source("https://raw.githubusercontent.com/grbruns/cst383/master/class-util.R")
+
+# data cleaning files
+source("https://raw.githubusercontent.com/Will-Carrara/mushroom-util.R/master/read")
+source("https://raw.githubusercontent.com/Will-Carrara/mushroom-util.R/master/write")
+
+# set seed for repeatability
+set.seed(1)
+```
+
+### Reading Data
+
+***Attribute Information:***
+
+1. **class:** edible, poisonous.
+1. **cap_shape:** bell, conical, convex, flat, knobbed, sunken.
+2. **cap_surface:** fibrous, grooves, scaly, smooth.
+3. **cap_color:** brown, buff, cinnamon, gray, green, pink, purple, red, white, yellow.
+4. **bruises:** yes, no.
+5. **odor:** almond, anise, creosote, fishy, foul, musty, none, pungent, spicy.
+6. **gill_attachment:** attached, descending, free, notched.
+7. **gill_spacing:** close, crowded, distant.
+8. **gill_size:** broad, narrow.
+9. **gill_color:** black, brown, buff, chocolate, gray, green, orange, pink, purple, red, white, yellow.
+10. **stalk_shape:** enlarging, tapering.
+11. **stalk_root:** bulbous, club, cup, equal, rhizomorphs, rooted, ?.
+12. **stalk_surface_above_ring:** fibrous, scaly, silky, smooth.
+13. **stalk_surface_below_ring:** fibrous, scaly, silky, smooth. 
+14. **stalk_color_above_ring:** brown, buff, cinnamon, gray, orange, pink, red, white, yellow. 
+15. **stalk_color_below_ring:** brown, buff, cinnamon, gray, orange, pink, red, white, yellow.
+16. **veil_type:** partial, universal. 
+17. **veil_color:** brown, orange, white, yellow. 
+18. **ring_number:** none, one, two. 
+19. **ring_type:** cobwebby, evanescent, flaring, large, none, pendant, sheathing, zone.
+20. **spore_print_color:** black, brown, buff, chocolate, green, orange, purple, white, yellow.
+21. **population:** abundant, clustered, numerous, scattered, several, solitary. 
+22. **habitat:** grasses, leaves, meadows, paths, urban, waste, woods.
+
+### Pre-processing Data
+
+```{r}
+# read & process (Bearded Fieldcap)
+mush = agrocybe_molesta()
+
+# convert & create a numeric data frame (False Deathcap)
+mush_num = amanita_citrina(mush) 
+```
+
+The mycology data set contains `r nrow(mush)` instances and has `r round(mean(is.na(mush)), 2)`% missing data. The class distribution in this data set consists of `r ncol(mush)` attributes. The mycology data set initially contained categorical variables denoted as a single letter. These values were updated manually to their corresponding full-word definition. This process required many lines of code which are not explicitly included in the body of this report. The function used to achieve this can be found [here](https://raw.githubusercontent.com/Will-Carrara/mushroom-util.R/master/read) and is denoted in a source file above. For flexibility, a second numerical form of this data was created using a function which can be found [here](https://raw.githubusercontent.com/Will-Carrara/mushroom-util.R/master/write). For brevity, these are the only two blocks of code not included in this report.
+
+We initially analyze the data integrity and find that of the `r round(mean(is.na(mush)), 2)`% missing data in the set, 100% of the missing values are located within the <i>stalk_root</i> attribute. Of these `r nrow(mush$stalk_root)` instances, there are a total of `r sum(is.na(mush$stalk_root))` <i>NA</i> values, making the integrity of this class approximately `r round(mean(complete.cases(mush$stalk_root)), 2) * 100`%. Through further examination, we also find that there is a 0.00% variance in the <i>veil_type</i> attribute in the mycology data. To improve the performance of our models, these attributes have been removed.   
+
+```{r fig.align="center", fig.cap="**Figure n:** Here is a really important caption."}
+mush$veil_type = NULL
+mush$stalk_root = NULL
+
+mush_num$veil_type = NULL
+mush_num$stalk_root = NULL
+```
+
+### Data Exploration
+
+We initially create a function to visualize the interesting features of edible and poisonous mushrooms to aid in our exploration of the data.
+
+```{r}
+#define color key
+p = "#b87e2f"
+e = "#a5a542"
+
+#34495E
+
+# plotting function (Trumpet Chanterelle)
+cantharellus_tubaeformis = function (featureY, featureX, labelY, labelX, class=FALSE) {
+  par(mar=c(5,6,4,1)+.1, las=1)
+  plot(jitter(mush_num[,featureY], 2) ~ jitter(mush_num[,featureX], 2), data=mush_num, 
+       col=ifelse(class>0,alpha(p,.5),alpha(e,.5)), pch = 16, xlab="", ylab="", 
+       cex=.5, main=paste(labelY,"vs",labelX), axes=FALSE)
+  
+  if (class == FALSE) {
+    axis(2, at=1:length(levels(mush[,featureY])), labels=levels(mush[,featureY]))
+    axis(1, at=1:(length(levels(mush[,featureX]))), labels=levels(mush[,featureX]))
+  }
+  else{
+    axis(2, at=1:length(levels(mush[,featureY])), labels=levels(mush[,featureY]))
+    axis(1, at=0:(length(levels(mush[,featureX]))-1), labels=levels(mush[,featureX]))
+  }
+  
+  par(las=0)
+  mtext(2, line = 4.2, text=labelY, font=3)
+  mtext(1, line = 2.5, text=labelX, font=3)
+  
+  legend("topright", legend=c("edible","poisonous"), col=c(alpha(e,.8), alpha(p,.8)), pch=16, 
+         inset=c(0,-.225), xpd=TRUE, bty="n")
+  box()
+  grid()
+}
+```
+
+Here we will explore the data before fitting our models to get an idea of what to expect. To do this we must first understand some mycology vernacular. Mushrooms are a type of fungus. There are many different kinds of fungi, including molds and crusts, as well as more developed types that have a stalk and a cap. Fungi are distinct from plants because they do not possess chlorophyll, the green pigment that allows plants to manufacture sugar from the sun's energy. Mushrooms need to absorb their food from the environment in which they live. Due to this unique evolutionary track mushrooms possess many different inherited traits; some of which are illustrated below in figure 1. 
+
+```{r, out.width = "400px", fig.align="center", fig.cap="**Figure 1:** Mushroom anatomy.", echo=FALSE, fig.show='hold'}
+knitr::include_graphics(c("https://www.kymiaarts.com/uploads/2/7/4/0/27401107/amanita-anatomy_1_orig.png", ("https://backwaterbotanics.files.wordpress.com/2014/06/8a75c-parts-of-a-mushroom.gif")))
+```
+
+Now that we have a better understanding of the physical characteristics of mushrooms, we investigate the two most apparent qualities: Cap Shape and Surface Texture. The following will plot a variable on two axes and using colors to see the relationship as to whether or not the mushroom is edible or poisonous. In these plots, edible is shown as green and poisonous is shown as brown. We are looking for spots where there exists an overwhelming majority of one color. This will greatly aid us in feature selection when we build our models.  
+
+A comparison of <i>Cap Surface</i> to <i>Cap Shape</i> shows us:
+
+* Bell shaped caps are more likely to be edible.
+* Convex or flat shaped caps have a mix of edible and poisonous and make up the majority of the data.
+* Cap surface alone does not tell us a lot of information.
+* Cap surface fibrous + cap shape bell, knobbed, or sunken are likely to be edible.
+* These variables will likely increase information gain slightly.
+
+```{r fig.align="center", fig.cap="**Figure 2:** cap surface and cap shape scatter plot comparison."}
+cantharellus_tubaeformis("cap_surface", "cap_shape", "Cap Surface", "Cap Shape")
+```
+
+A comparison of <i>Stalk Color Above Ring</i> to <i>Stalk Color Below Ring</i> shows us:
+
+* Gray color above the ring is almost always going to be edible.
+* Gray color below the ring is almost always going to be edible.
+* Buff color below the ring is almost always going to be poisonous.
+* These variables are likely to increase information gain by a fair amount.
+
+
+```{r fig.align="center", fig.cap="**Figure 3:** stalk color above ring and stalk color below ring scatter plot comparison.", fig.width= 7.5}
+cantharellus_tubaeformis("stalk_color_above_ring", "stalk_color_below_ring", "Stalk Color Above Ring\n", 
+                         "\nStalk Color Below Ring")
+```
+
+A comparison of <i>Odor</i> to <i>Spore Print Color</i> shows us:
+
+* Foul, creosote, fishy, pungent, and spicy odors are highly likely to be poisonous.
+* Almond and anise odors are highly likely to be edible.
+* No odor appears to be primarily edible unless the spore print color is green.
+* These variables will likely lead to a lot of information gain.
+
+```{r fig.align="center", fig.cap="**Figure 4:** odor and spore print color scatter plot comparison.", fig.width=8}
+cantharellus_tubaeformis("odor", "spore_print_color", "Odor", "Spore Print Color")
+```
+
+Both <i>Odor</i> and <i>Spore Print Color</i> appear to be very strong predictors. Let's investigate them independently and verify. 
+
+Looking at <i>Odor</i>, we see that:
+
+* Odor is an excellent indicator of mushrooms being edible or poisonous.
+* No odor contains data which is classified as both edible and poisonous.
+* Alone, spore print color is not as strong as odor.
+
+```{r, fig.align="center", fig.width=15.7, fig.height=7, fig.cap="**Figure 5:** odor and spore print color bar plot comparison."}
+tbl = table(mush$class, mush$odor)
+tbl1 = apply(tbl, 2, function(x) x/sum(x))
+
+par(mar=c(5,3,5,1), las = 1, mfrow=c(1,2))
+
+barplot(tbl1, main = "Odor", col = c(alpha(e,.9), alpha(p,.9)))
+legend("topright", legend=c("edible","poisonous"), col=c(alpha(e,.8), alpha(p,.8)), pch=16, inset=c(0,-.15), xpd=TRUE, bty="n")
+
+tbl = table(mush$class, mush$spore_print_color)
+tbl1 = apply(tbl, 2, function(x) x/sum(x))
+
+barplot(tbl1, main = "Spore Print Color", col = c(alpha(e,.9), alpha(p,.9)))
+legend("topright", legend=c("edible","poisonous"), col=c(alpha(e,.8), alpha(p,.8)), pch=16, inset=c(0,-.15), xpd=TRUE, bty="n")
+```
+
+### Data Partitioning
+
+Before fitting our models it is crucial to split data into different parts – train and test data. As there is no perfect way to know exactly what ratio will be optimum to use in our models, this report will split 70% as training and 30% as testing. If we choose too large of a training set we run the risk of over-fitting our models. Too small, and it is likely our models will not conform to the data correctly and performance will suffer.  
+
+Initially, we ran our models with very high levels of training data and they had perfect predictions with zero false positives or negatives. With the limited testing, we felt that accuracy was not representative of a proper classifier, so we scaled down the training data which created more bad predictions. This increases our confidence in the models as they are now more rigorously tested.  
+
+```{r}
+# training and test sets (70-30)
+n = nrow(mush)
+tr_rows = sample(1:n, (0.70 * n))
+
+#Create a data frame from tr_rows and the feature vector
+tr_mush = mush[tr_rows,]
+te_mush = mush[-tr_rows,]
+```
+
+### Building a Logistic Regression Model
+
+Logistic regression is a classification algorithm used to assign observations to a discrete set of classes. Unlike linear regression which outputs continuous number values, logistic regression transforms its output using the logistic sigmoid function to return a probability value which can then be mapped to two or more discrete classes using a cut-off threshold. 
+
+Using the features which we explored earlier, we construct our first model.  
+
+```{r message=FALSE, warning=FALSE}
+fit = glm(class ~ cap_surface + cap_shape + cap_color + spore_print_color + odor, 
+          data=tr_mush, family="binomial")
+```
+
+#### Assessing Model Accuracy
+
+We run our model on the test data and classify examples with this function. We can define the “accuracy”, or success rate, of our model as the fraction of test examples that are successfully classified. This function presents this number and the respective confusion matrix associated with the model.   
+
+```{r}
+# evaluation function (Distinguished Inkcap)
+coprinus_alopecius = function(model, version, type=FALSE, thresh=0.5){
+
+  if (type == TRUE) {
+    y = predict(model, te_mush, type="response")
+    predicted = as.numeric(y > thresh)
+    actual = as.numeric(te_mush$class) - 1
+  } else{
+    predicted = predict(model, te_mush, type="class")
+    actual = te_mush$class
+    y = NULL
+  }
+
+  conf_mtx = table(actual, predicted)
+  succ_rate = mean(predicted == actual)
+  
+  print(paste0("Model ", version, ": ", round(succ_rate, 3)))
+  
+  return(list("Predicted"=predicted, "Actual"=actual, "Confusion Matrix"=conf_mtx, "y" = y))
+}
+```
+
+The model accuracy is 99.7% accurate! There is a slight problem however, there are 7 mushrooms which have been predicted as edible but were actually poisonous. One solution is to change the threshold for classifying an edible mushroom. Our model accuracy may suffer, but there won't be any fatal mistakes. 
+
+```{r}
+coprinus_alopecius(fit, 1, type=TRUE)[3]
+```
+
+The second model we will construct will be based on a different methodology. The first model used the features which we explored in earlier to predict mushroom edibility. The second method will use Forward Selection as a means to determine the relevant feature set (minimizing the root-mean-squared-error). We will also alter the threshold by an order of magnitude to avoid any false positive predictions. 
+
+```{r}
+remaining_features = setdiff(names(mush), c("class"))
+selected_features = c()
+
+for (i in 1:4) {
+rmses = c()
+
+  for (feature in remaining_features) {
+  rmse = cross_validate_lm(mush_num, "class", c(selected_features, feature))
+  rmses = c(rmses, rmse)
+  }
+
+best_remaining = remaining_features[order(rmses)][1]
+
+selected_features = c(selected_features, best_remaining)
+remaining_features = setdiff(remaining_features, best_remaining)
+}
+
+print(paste("Best Features: ", paste(selected_features, collapse = ",")))
+```
+
+As Forward Selection is a pseudo-optimization technique we decided to further investigate the features it produced by analyzing their model significance. In doing so we were able to see that the features presented by the Forward Selection method weren't optimal (<i>surprise</i>). Therefore we added features by choosing very obvious physical features to define a better relationship for this model.
+
+```{r message=FALSE, warning=FALSE}
+fit2 = glm(class ~ gill_size + bruises + gill_spacing + cap_shape + cap_surface + cap_color,
+           data=tr_mush, family="binomial")
+```
+
+Looking at our confusion matrix we can see that we have decreased the overall accurate model. We have lost ~20% accuracy to halve the recall rate.     
+
+```{r}
+coprinus_alopecius(fit2, 1, type=TRUE, thresh=0.05)[3]
+```
+
+Let's examine the precision and recall data in more detail using the function defined below.
+
+```{r results='hide'}
+# calculate precision and recall values (Cryptic Bonnet)
+mycena_picta = function(predicts, actuals, y) {
+  thresh = seq(0, 1, length.out=50)
+  prec_rec = data.frame()
+  actuals = factor(as.numeric(actuals))
+  
+  for (th in thresh) {
+    predicts = factor(as.numeric(y >= th), levels=c("0","1"))
+    prec_rec = rbind(prec_rec, as.vector(table(predicts, actuals)))
+  }
+  
+  names(prec_rec) = c("TN", "FP", "FN", "TP")
+  prec_rec$threshold = thresh
+  
+  prec_rec$precision = prec_rec$TP/(prec_rec$TP + prec_rec$FP)
+  prec_rec$recall    = prec_rec$TP/(prec_rec$TP + prec_rec$FN)
+  prec_rec$false_pos = prec_rec$FP/(prec_rec$FP + prec_rec$TN)
+  
+  return(prec_rec)
+}
+
+predicted1 = as.vector(unlist(coprinus_alopecius(fit, 1, type=TRUE)[1]))
+actuals1 = as.vector(unlist(coprinus_alopecius(fit, 1, type=TRUE)[2]))
+y1 = as.vector(unlist(coprinus_alopecius(fit, 1, type=TRUE)[4]))
+
+predicted2 = as.vector(unlist(coprinus_alopecius(fit2, 1, type=TRUE, thresh=0.05)[1]))
+actuals2 = as.vector(unlist(coprinus_alopecius(fit2, 1, type=TRUE, thresh=0.05)[2]))
+y2 = as.vector(unlist(coprinus_alopecius(fit2, 1, type=TRUE, thresh=0.05)[4]))
+
+prec_rec1 = mycena_picta(predicted1, actuals1, y1)
+prec_rec2 = mycena_picta(predicted2, actuals2, y2)
+```
+
+Looking at precision vs recall, we can confirm that for a close to ideal recall rate the precision will be approximately 70-80%. This means we can remove the issue of false negatives in our model without the trade-off being overwhelming. 
+
+```{r fig.align="center", fig.cap="**Figure 6:** precision-recall curve model comparison."}
+plot(precision ~ recall, data=prec_rec2, type="s", xlim=c(.7,1), ylim=c(0.5,1), lwd=2.5, col=alpha(p,.8), 
+     main="Precision vs Recall Model 2")
+grid()
+```
+
+The receiver operating characteristic (ROC) plot gives an overall idea of how well the classifiers are working. The curve for a perfect classifier would hug the left and top edges of the plot. The curve for a classifier that makes random decisions would be a diagonal line from the lower-left to the upper-right.
+
+```{r fig.align="center", fig.cap="**Figure 7:** roc curve model comparison."}
+plot(recall~false_pos, data=prec_rec1, type="l", main="Receiver Operating Characteristics", 
+     ylab="True Positive Rate", xlab="False Positive Rate", col=p, lwd=2.5)
+lines(recall~false_pos, data=prec_rec2, type="l", col=e, lwd=2.5)
+
+legend("topright", legend=c("Model: 1","Model: 2"), col=c(alpha(p,.8), alpha(e,.8)), pch=16, 
+       inset=c(0,-.225), xpd=TRUE, bty="n")
+
+grid()
+```
+
+Taking into consideration that we are predicting if a mushroom is edible or poisonous, we would like to keep false negatives as close to zero as possible even if there is a hit to the model precision. In this context, we conclude that the trade-off is worth it because of the consequences of predicting false negatives could potentially be lethal.
+
+### Building a Classification Tree 
+
+As we have many categorical variables, a classification tree is an ideal tool to aid in our prediction efforts. We’ll use the rpart package to construct our trees. We will begin by building a model without any customization using all the features available. 
+
+```{r fig.align="center", fig.width=7.5, fig.cap="**Figure 8:** classification tree using all features."}
+fit = rpart(class ~ ., data=tr_mush, method="class")
+
+rpart.plot(fit, box.palette=c(e,p), branch.lwd=2, yesno=2, main="Model: 1", shadow.col="gray")
+```
+
+When rpart grows a tree it performs 10-fold cross-validation on the data. These are the cross-validation results. Interestingly, the only features actually used in tree construction are <i>odor</i> and <i>spore_print_color</i>. This will surely simplify our mnemonic!
+
+```{r}
+printcp(fit)
+```
+
+#### Assessing Model Accuracy
+
+We run our model on the test data and classify examples with using our assessment function.  
+
+```{r}
+coprinus_alopecius(fit, 1)[3]
+```
+
+We can immediately see a problem with this model. There are 20 mushrooms which have been predicted as edible but were actually poisonous -this is unacceptable. One solution is to set a penalty for wrongly predicting a mushroom as edible when in reality it is poisonous; a mistake the other way is not fatal. To do this, we will introduce a penalty matrix that we’ll use as a parameter in our rpart function. Now we will recreate our penalized tree with a little feature engineering based upon our data exploration.
+
+```{r fig.align="center", fig.cap="**Figure 9:** classification tree with engineered features and penalty matrix."}
+# penalty matrix
+penalty_matrix = matrix(c(0, 1, 11, 0), byrow = TRUE, nrow = 2)
+
+fit_penalty = rpart(class ~ ., data = tr_mush, method = "class", parms = list(loss = penalty_matrix))
+
+rpart.plot(fit_penalty, box.palette=c(e,p), branch.lwd=2, yesno=2, shadow.col="gray", main="Model 2")
+```
+
+We notice that our tree has changed pretty dramatically with the introduction of our penalty system. Below is a plot which illustrates the cross-validation results with the relative x-value error in relation to the model levels. We can obtain very high accuracy by increasing the levels and complexity of the tree, but this will ultimately over-fit the data so we must be careful.
+
+```{r fig.align="center", , fig.cap="**Figure 10:** relative x-val error in relation to the model 2 levels."}
+# visualize cross-validation results
+plotcp(fit_penalty, col=e, lwd=2.5)
+```
+
+Classifying examples with using our assessment function we find that we have achieved our goal and built a perfect mushroom classifier! Trimming was ruled out in this model as affected the accuracy.
+
+```{r}
+coprinus_alopecius(fit_penalty, 2)[3]
+```
+
+Bias error is due to our assumptions about target function. The more assumptions (restrictions) we make about the target function, the more bias we introduce. Models with high bias are less flexible because we have imposed more rules on the target functions. Variance error is the variability of a target function's form with respect to different training sets. Models with small variance error will not change much if you replace a couple of samples in the training set. Models with high variance might be affected even with small changes in the training set.
+
+```{r}
+# plot learning curves (Pavement Mushroom)
+agaricus_bitorquis = function(model, version){
+
+  te_errs = c()
+  tr_errs = c()
+  te_actual = te_mush$class
+  tr_sizes = seq(100, nrow(tr_mush), length.out=7)
+  
+  for (tr_size in tr_sizes) {
+    tr_dat1 = tr_mush[1:tr_size,]
+    tr_actual = tr_dat1$class
+    
+    fit = model
+  
+    # error on training set
+    tr_predicted = predict(fit, tr_dat1, type="class")
+    err = mean(tr_actual != tr_predicted)
+    tr_errs = c(tr_errs, err)
+   
+    # error on test set
+    te_predicted = predict(fit, te_mush, type="class")
+    err = mean(te_actual != te_predicted)
+    te_errs = c(te_errs, err)
+  }
+  
+  plot(x=tr_sizes, y=tr_errs, type="b", lwd=2.5, col=p, lty=2, main=paste("Learning Curves Model", version), 
+       ylab="Error", xlab="Training Size", ylim=c(0,.01), xlim=c(1170,5560))
+  
+  lines(x=tr_sizes, y=te_errs, col=e, lty=2, lwd=2.5)
+  
+  legend("topright", legend=c("Training Data", "Test Data"), col=c(e,p), lty=2, pch=c(1, NA), 
+         inset=c(0,-.225), xpd=TRUE, bty="n", lwd=2)
+  grid()
+}
+```
+
+From our learning curve, we can see that as the training set gets larger, the model does not necessarily generalize better. A set around 1000 values appears to be optimal in this range. The curve for model 2 was omitted as it is a perfect model.  
+
+```{r fig.align="center", fig.cap="**Figure 11:** learning curve for model 1."}
+agaricus_bitorquis(fit, 1)
+```
+
+### Conclusion 
+
+Odor is by far the most important variable in terms of mushroom edibility. The Logistic Regression models performed with high accuracy, before optimizing a threshold value to achieve perfect recall. With some fine tuning, a classification tree managed to predict the edibility of mushroom perfectly. The classification tree approach was preferred due to the ease of implementation and interpretability of the results. If you ever find yourself hungry and wondering the forest just remember the simple mnemonic: <i>"When the odor is almond, anis or none the mushroom is clean, unless the spore print color is green"</i>.   
+
+```{r, out.width = "90px", fig.align="center", echo=FALSE, fig.show='hold'}
+knitr::include_graphics("https://i.pinimg.com/originals/09/e4/d9/09e4d90b08a02d368ae0cc97003ff3ff.png")
+```
+
+&nbsp;
+<hr />
+<p style="text-align: center;">A work by <a href="https://github.com/Will-Carrara/mushroom-util.R">Will Carrara & Sverre Broen</a></p>
+<p style="text-align: center;"><span style="color: #808080;"><em>Building a Perfect Mushroom Classifier</em></span></p>
+
+<p style="text-align: center;">
+    <a href="https://i.pinimg.com/originals/09/e4/d9/09e4d90b08a02d368ae0cc97003ff3ff.png" class="fa fa-twitter"></a>
+</p>
+&nbsp;
